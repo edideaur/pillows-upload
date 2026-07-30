@@ -1,6 +1,6 @@
 """Imgur.gg upload functionality for pillows-upload."""
 
-# Copyright (c) 2024 pillows-upload contributors
+# Copyright (c) 2026 edideaur
 # SPDX-License-Identifier: MIT
 
 from __future__ import annotations
@@ -248,7 +248,7 @@ def _imgur_resume_filter(
                     "sha256": cached["sha256"],
                     "elapsed": ZERO_RETRIES,
                     "retries": ZERO_RETRIES,
-                }
+                },
             )
         else:
             todo.append(path)
@@ -352,7 +352,7 @@ def imgur_upload_all(  # noqa: C901, PLR0912, PLR0915
                             "sha256": compute_sha256(path),
                             "elapsed": 0,
                             "retries": ZERO_RETRIES,
-                        }
+                        },
                     )
                     if agg is not None:
                         agg.update(size)

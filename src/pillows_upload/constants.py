@@ -1,6 +1,6 @@
 """Constants and version for pillows-upload."""
 
-# Copyright (c) 2024 pillows-upload contributors
+# Copyright (c) 2026 edideaur
 # SPDX-License-Identifier: MIT
 
 from __future__ import annotations

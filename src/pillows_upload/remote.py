@@ -4,7 +4,7 @@ These hit plausible management endpoints; they are best-effort and will report
 a clear error if the server does not expose the operation.
 """
 
-# Copyright (c) 2024 pillows-upload contributors
+# Copyright (c) 2026 edideaur
 # SPDX-License-Identifier: MIT
 
 from __future__ import annotations

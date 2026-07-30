@@ -1,6 +1,6 @@
 """``watch`` subcommand: daemon that uploads new files as they appear."""
 
-# Copyright (c) 2024 pillows-upload contributors
+# Copyright (c) 2026 edideaur
 # SPDX-License-Identifier: MIT
 
 from __future__ import annotations

@@ -1,6 +1,6 @@
 """pillows-upload: Bulk upload files to pillows.su."""
 
-# Copyleft 2026 edideaur
+# Copyright 2026 edideaur
 # SPDX-License-Identifier:  SSPL-1.0
 
 from __future__ import annotations
