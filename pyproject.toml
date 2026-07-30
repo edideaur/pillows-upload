@@ -1,21 +1,28 @@
 [project]
-name = "pilllows-uploader"
+name = "pillows-upload"
 description = "Bulk upload files to pillows.su via the chunked upload API"
 dynamic = ["version"]
 requires-python = ">=3.10"
 dependencies = [
-    "requests>=2.28.0",
+    "niquests>=3.10.0",
     "tqdm>=4.66.0",
     'tomli>=1.0.0; python_version < "3.11"',
+    "typing-extensions>=4.16.0",
 ]
 
 [project.scripts]
-pillows-upload = "main:main"
+pillows-upload = "pillows_upload.cli:main"
 
 [project.optional-dependencies]
-xlsx = ["openpyxl"]
+xlsx = [
+    "openpyxl",
+]
 dev = [
     "pytest>=7.0.0",
+    "ruff>=0.4.0",
+    "ty>=0.0.1a1",
+    "openpyxl>=3.1.0",
+    "tomli>=2.0.0",
 ]
 
 [build-system]
@@ -23,39 +30,53 @@ requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.dynamic]
-version = {attr = "main.__version__"}
+version = {attr = "pillows_upload.constants.__version__"}
 
-[tool.setuptools]
-py-modules = ["main"]
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [tool.ruff]
 target-version = "py310"
 line-length = 120
 
 [tool.ruff.lint]
-select = [
-    "E",    # pycodestyle errors
-    "W",    # pycodestyle warnings
-    "F",    # pyflakes
-    "I",    # isort
-    "N",    # pep8-naming
-    "UP",   # pyupgrade
-    "B",    # flake8-bugbear
-    "A",    # flake8-builtins
-    "S",    # flake8-bandit
-    "T20",  # flake8-print
-    "SIM",  # flake8-simplify
-    "RUF",  # ruff-specific rules
-]
+select = ["ALL"]
 ignore = [
-    "T201",
+    "D203",  # incompatible with D211
+    "D213",  # incompatible with D212
+    "COM812",  # handled by ruff format (trailing commas)
+    "ISC001",  # handled by ruff format (implicit string concat)
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101"]
+"tests/**" = ["S101", "S106"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["main"]
+known-first-party = ["pillows_upload"]
 
-[tool.ty.environment]
-python-version = "3.10"
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+[tool.ty]
+environment = { python-version = "3.11" }
+[[tool.ty.overrides]]
+include = ["tests/**"]
+[tool.ty.overrides.rules]
+"not-subscriptable" = "ignore"
+"unresolved-attribute" = "ignore"
+"invalid-argument-type" = "ignore"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.16.0",
+    "tomli>=2.4.1",
+    "ty>=0.0.65",
+]

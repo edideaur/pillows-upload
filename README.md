@@ -1,4 +1,4 @@
-# pilllows-uploader
+# pillows-upload
 
 Bulk upload files to [pillows.su](https://pillows.su) via the chunked upload API.
 
@@ -22,15 +22,15 @@ pillows-upload --completions fish > ~/.config/fish/completions/pillows-upload.fi
 ## Install
 
 ```bash
-pip install git+https://github.com/edideaur/pilllows-uploader.git
+pip install git+https://github.com/edideaur/pillows-upload.git
 ```
 
-Or install manually:
+Or install manually with [uv](https://github.com/astral-sh/uv):
 
 ```bash
-git clone https://github.com/edideaur/pilllows-uploader.git
-cd pilllows-uploader
-pip install -r requirements.txt
+git clone https://github.com/edideaur/pillows-upload.git
+cd pillows-upload
+uv pip install -e .
 ```
 
 ## Usage
@@ -52,15 +52,59 @@ pillows-upload song.mp3 image.png
 pillows-upload ~/Music
 ```
 
+## Download & Upload
+
+The `download` subcommand fetches a file from a URL and uploads it directly to pillows.su, then prints the final link:
+
+```bash
+pillows-upload download "https://clonr.co/My%20Track.mp3"
+pillows-upload download "https://imgur.gg/f/abc123"
+pillows-upload download "https://example.com/file.zip"
+```
+
+Supported URL types:
+- **clonr.co** - URL-decodes the filename, downloads from the original URL
+- **imgur.gg/f/\<id\>** - fetches name + CDN URL from the imgur.gg API, downloads from CDN
+- **generic URLs** - strips query params and uses the basename
+
+## Upload to imgur.gg
+
+The `imgur-upload` subcommand uploads local files directly to [imgur.gg](https://imgur.gg) via its API. Files are registered in batches of up to 50, then uploaded and finalized concurrently:
+
+```bash
+pillows-upload imgur-upload ~/Pictures -k "$IMGUR_KEY"
+pillows-upload imgur-upload song.mp3 cover.png -c 4 --dry-run
+```
+
+- Auth uses the `x-api-key` header. The key is read from `-k/--api-key`, then the `IMGUR_KEY` environment variable, then `imgur_api_key` in the config file.
+- Large files are uploaded using imgur.gg's multipart flow automatically.
+- Concurrency is controlled with `-c/--concurrency` (parallel files). For maximum throughput use `-T/--turbo`.
+- Resume uploads across runs with `--resume` (uses `--state-file`, default `.imgur_upload_state`, kept separate from the pillows.su state file).
+
+## Maximum throughput
+
+Both the pillows.su upload and the imgur.gg upload leverage [niquests](https://github.com/jawah/niquests), which negotiates **HTTP/3 (QUIC)** by default and multiplexes concurrent requests over a single connection (`--turbo` enables `multiplexed` sessions). To saturate bandwidth:
+
+```bash
+# pillows.su
+pillows-upload -T -c 8 --chunk-concurrency 8 ~/Music
+
+# imgur.gg
+pillows-upload imgur-upload -T ~/Pictures
+```
+
+`-T/--turbo` is a preset that sets file concurrency and chunk concurrency to 8.
+
 ## Options
 
 | Flag | Description |
 |------|-------------|
-| `-o, --output` | Output path (default: `upload_map.csv`) |
-| `-k, --api-key` | API key (default: `PILLOWS_API_KEY` env var) |
+| `-o, --output` | Output path (only written when `--format` is set) |
+| `-k, --api-key` | API key (default: `PILLOWS_KEY` env var; `imgur-upload` uses `IMGUR_KEY`) |
 | `--base-url` | API base URL (default: `https://api.pillows.su`) |
 | `--chunk-size` | Chunk size in bytes (default: `8388608`) |
 | `-c, --concurrency` | Parallel file uploads (default: `1`) |
+| `-T, --turbo` | Max-throughput preset: file + chunk concurrency = `8` |
 | `--chunk-concurrency` | Parallel chunk uploads per file (default: `1`) |
 | `-r, --retries` | Retry count per file (default: `3`) |
 | `--part-retries` | Retry count per chunk (default: `2`) |
@@ -72,15 +116,17 @@ pillows-upload ~/Music
 | `--version` | Show version and exit |
 | `--resume` | Skip files already uploaded (uses state file) |
 | `--state-file` | State file path for resume (default: `.upload_state`) |
-| `--no-csv` | Skip writing the output file |
 | `--delete` | Delete local files after successful upload |
 | `--no-progress` | Disable progress bars |
 | `--completions SHELL` | Print shell completions (`bash`, `zsh`, or `fish`) |
-| `--config PATH` | Config file path (default: `.env` or `pillows-uploader.toml` in current dir) |
+| `--config PATH` | Config file path (default: `~/.config/pillows-upload/config`) |
 | `--ext` | Only upload files with these extensions (e.g. `.mp3 .wav`) |
 | `--min-size` | Skip files smaller than N bytes |
 | `--max-size` | Skip files larger than N bytes (`0` = no limit) |
-| `--format` | Output format: `csv`, `json`, `ndjson`, `html`, `xlsx` (default: `csv`) |
+| `--format` | Output format: `csv`, `json`, `ndjson`, `html`, `xlsx` |
+| `--json-log` | Emit structured JSON log lines instead of plain text |
+| `--adaptive` | Auto-tune concurrency up on success, down on errors |
+| `--no-circuit-breaker` | Disable the circuit breaker that pauses after repeated failures |
 
 ## Examples
 
@@ -112,24 +158,24 @@ pillows-upload -k YOUR_API_KEY
 
 ## Config File
 
-Set defaults in `.env` or `pillows-uploader.toml` in the current directory so you don't have to repeat flags.
+Set defaults in `~/.config/pillows-upload/config` (or pass `--config PATH`) so you don't have to repeat flags. Both `KEY=VALUE` and TOML formats are supported.
 
-**.env**
+**`~/.config/pillows-upload/config`**
 ```bash
-PILLOWS_API_KEY=your-key
+PILLOWS_KEY=your-key
 BASE_URL=https://api.pillows.su
 CHUNK_SIZE=8388608
 ```
 
-**pillows-uploader.toml**
+**`config.toml`**
 ```toml
-[pillows-uploader]
+[pillows-upload]
 api_key = "your-key"
 base_url = "https://api.pillows.su"
 chunk_size = "8388608"
 ```
 
-CLI flags always override config file values.
+Environment variables (`PILLOWS_KEY`) take priority over the config file. CLI flags always override both.
 
 ## Output Formats
 
@@ -147,7 +193,7 @@ pillows-upload --format ndjson
 | `html` | Simple HTML table |
 | `xlsx` | Excel workbook (requires `openpyxl`) |
 
-Use `--no-csv` to skip writing any output file.
+Output is written only when you pass `--format` (or `-o`). By default no output file is created.
 
 ## State File
 
@@ -156,6 +202,50 @@ The state file (default: `.upload_state`) tracks uploaded files using JSON Lines
 - **Resume** - re-run the same command and already-uploaded files are skipped
 - **Hash cache** - unchanged files are skipped automatically
 - **Partial resume** - if an upload is interrupted, remaining chunks resume from the last successful part (assumes the API handles idempotent/duplicate part uploads)
+
+## Operational subcommands
+
+Beyond uploading, `pillows-upload` ships several management subcommands:
+
+```bash
+# Read/write config without editing files
+pillows-upload config set PILLOWS_KEY your-key
+pillows-upload config get PILLOWS_KEY
+pillows-upload config list
+
+# Diagnose environment: keys, network reachability, negotiated HTTP version
+pillows-upload doctor
+
+# Throughput benchmark (generates dummy files, measures MB/s)
+pillows-upload bench --count 16 --size 16777216 -c 8
+
+# Watch a directory and upload new files as they appear
+pillows-upload watch ./inbox --interval 10 --delete-after
+
+# Best-effort remote file management (if the server exposes it)
+pillows-upload ls
+pillows-upload rm <file_id>
+
+# Download & upload multiple URLs from the CLI or a file
+pillows-upload download url1 url2 --list urls.txt
+```
+
+### Structured logging
+
+Set `--json-log` (or the `PILLOWS_JSON_LOG=1` environment variable) to emit one
+JSON object per log line (`ts`, `level`, `logger`, `msg`) instead of plain text.
+This is handy for ingesting logs into a pipeline.
+
+### HTTP/3 and resilience
+
+- **HTTP/3 (QUIC)** is negotiated by default. To force it (and disable HTTP/1+2),
+  set `PILLOWS_FORCE_HTTP3=1`. The negotiated protocol is logged once per host.
+- **Circuit breaker** pauses uploads after 5 consecutive failures for 30s, then
+  resumes — disable with `--no-circuit-breaker`.
+- **Pre-flight key check** verifies the API key against the host before uploading
+  (skipped on `--dry-run`); a rejected key fails fast with a clear message.
+- **Adaptive concurrency** (`--adaptive`) ramps concurrency up on success and
+  down on errors to self-tune throughput.
 
 ## Exit Codes
 
@@ -182,7 +272,7 @@ The CLI validates all numeric inputs before starting:
 You can import and use `upload_files` directly in your Python app:
 
 ```python
-from main import upload_files
+from pillows_upload import upload_files
 
 results = upload_files(
     paths=["./downloads"],
@@ -204,7 +294,7 @@ Available imports:
 - `upload_files` - high-level convenience function
 - `upload_one` - upload a single Path
 - `StateFile` - JSON Lines state persistence with resume support
-- `Config` - `.env` and `pillows-uploader.toml` config loader
+- `Config` - config loader for `~/.config/pillows-upload/config`
 - `OutputWriter` - streaming CSV, NDJSON, JSON, HTML, XLSX writer
 
 ## Getting an API key
