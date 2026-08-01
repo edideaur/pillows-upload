@@ -21,7 +21,22 @@ if TYPE_CHECKING:
 import niquests
 from tqdm import tqdm
 
+try:
+    # niquests vendors urllib3_future; the traffic police raises this when a
+    # pooled connection is torn down in another thread. It is a plain Exception
+    # (not a niquests.RequestException), so it otherwise escapes every handler.
+    from urllib3_future.util.traffic_police import UnavailableTraffic
+except Exception:  # pragma: no cover - vendored path varies across niquests
+    UnavailableTraffic = None  # type: ignore[assignment]
+
 from .api import finalize_upload, init_upload, upload_part
+
+# Exceptions that should be retried rather than aborting the upload. Includes
+# UnavailableTraffic so a broken pooled connection in the concurrent path is
+# retried instead of crashing the whole run.
+_RETRIABLE_EXC: tuple[type[Exception], ...] = (niquests.RequestException, RuntimeError)
+if UnavailableTraffic is not None:
+    _RETRIABLE_EXC = _RETRIABLE_EXC + (UnavailableTraffic,)
 from .constants import (
     BASE_URL,
     DEFAULT_BACKOFF,
@@ -147,7 +162,7 @@ def _upload_chunk_with_retry(  # noqa: PLR0913
                 api_key=api_key,
                 timeout=timeout,
             )
-        except (niquests.RequestException, RuntimeError):  # noqa: PERF203
+        except _RETRIABLE_EXC:  # noqa: PERF203
             part_attempt += 1
             retries_used += 1
             if part_attempt >= part_retries:
@@ -305,104 +320,116 @@ def _attempt_upload(  # noqa: PLR0913
 ) -> dict[str, Any]:
     """Attempt a single upload try. Raises on failure."""
     active_session = cfg.session or make_session()
-    size = fpath.stat().st_size
-    task_id = init_upload(
-        active_session,
-        cfg.base_url,
-        fpath.name,
-        size,
-        api_key=cfg.api_key,
-        timeout=cfg.timeout,
-    )
-    if cfg.verbose:
-        logger.info("  Task ID: %s", task_id)
-
-    skip_parts = ZERO_RETRIES
-    if cached and cached.get("parts_uploaded"):
-        skip_parts = cached["parts_uploaded"]
+    # Control-plane calls (init/finalize) use a dedicated session so they never
+    # touch the connection pool that the concurrent chunk uploaders churn.
+    # Reusing the shared session for finalize is what triggered
+    # UnavailableTraffic ("a connection was broken, presumably in another
+    # thread") and crashed the whole run.
+    control_session = make_session()
+    try:
+        size = fpath.stat().st_size
+        task_id = init_upload(
+            control_session,
+            cfg.base_url,
+            fpath.name,
+            size,
+            api_key=cfg.api_key,
+            timeout=cfg.timeout,
+        )
         if cfg.verbose:
-            logger.info("  Resuming from part %d", skip_parts + 1)
+            logger.info("  Task ID: %s", task_id)
 
-    chunk_iter = _iter_chunks(fpath, cfg.chunk_size)
-    if skip_parts:
-        chunk_iter = (c for c in chunk_iter if c[0] > skip_parts)
+        skip_parts = ZERO_RETRIES
+        if cached and cached.get("parts_uploaded"):
+            skip_parts = cached["parts_uploaded"]
+            if cfg.verbose:
+                logger.info("  Resuming from part %d", skip_parts + 1)
 
-    pbar: tqdm | None = None
-    if cfg.progress and not cfg.verbose:
-        pbar = tqdm(
-            total=size,
-            desc=fpath.name,
-            unit="B",
-            unit_scale=True,
-            unit_divisor=KB_DIVISOR,
-            leave=False,
-            initial=skip_parts * cfg.chunk_size,
+        chunk_iter = _iter_chunks(fpath, cfg.chunk_size)
+        if skip_parts:
+            chunk_iter = (c for c in chunk_iter if c[0] > skip_parts)
+
+        pbar: tqdm | None = None
+        if cfg.progress and not cfg.verbose:
+            pbar = tqdm(
+                total=size,
+                desc=fpath.name,
+                unit="B",
+                unit_scale=True,
+                unit_divisor=KB_DIVISOR,
+                leave=False,
+                initial=skip_parts * cfg.chunk_size,
+            )
+
+        try:
+            if cfg.chunk_concurrency > MIN_CONCURRENCY:
+                uploaded_parts, chunk_retries = _upload_concurrent(
+                    active_session,
+                    base_url=cfg.base_url,
+                    task_id=task_id,
+                    fname=fpath.name,
+                    chunk_iter=chunk_iter,
+                    api_key=cfg.api_key,
+                    timeout=cfg.timeout,
+                    part_retries=cfg.part_retries,
+                    backoff=cfg.backoff,
+                    verbose=cfg.verbose,
+                    pbar=pbar,
+                    chunk_concurrency=cfg.chunk_concurrency,
+                )
+            else:
+                uploaded_parts, chunk_retries = _upload_sequential(
+                    active_session,
+                    base_url=cfg.base_url,
+                    task_id=task_id,
+                    fname=fpath.name,
+                    chunk_iter=chunk_iter,
+                    api_key=cfg.api_key,
+                    timeout=cfg.timeout,
+                    part_retries=cfg.part_retries,
+                    backoff=cfg.backoff,
+                    verbose=cfg.verbose,
+                    pbar=pbar,
+                )
+        finally:
+            if pbar is not None:
+                pbar.close()
+
+        total_retries += chunk_retries
+
+        # Finalize runs on the dedicated control session so it never touches
+        # the connection pool the concurrent chunk uploaders churn.
+        file_id = finalize_upload(
+            control_session,
+            cfg.base_url,
+            task_id,
+            api_key=cfg.api_key,
+            timeout=DONE_TIMEOUT,
         )
 
-    try:
-        if cfg.chunk_concurrency > MIN_CONCURRENCY:
-            uploaded_parts, chunk_retries = _upload_concurrent(
-                active_session,
-                base_url=cfg.base_url,
-                task_id=task_id,
-                fname=fpath.name,
-                chunk_iter=chunk_iter,
-                api_key=cfg.api_key,
-                timeout=cfg.timeout,
-                part_retries=cfg.part_retries,
-                backoff=cfg.backoff,
-                verbose=cfg.verbose,
-                pbar=pbar,
-                chunk_concurrency=cfg.chunk_concurrency,
+        elapsed = time.time() - start
+        url = PILLOWS_URL_TEMPLATE.format(file_id=file_id)
+
+        if cfg.state:
+            cfg.state.record(
+                abs_path,
+                size=size,
+                sha256=sha256_hash,
+                parts_uploaded=uploaded_parts,
+                url=url,
             )
-        else:
-            uploaded_parts, chunk_retries = _upload_sequential(
-                active_session,
-                base_url=cfg.base_url,
-                task_id=task_id,
-                fname=fpath.name,
-                chunk_iter=chunk_iter,
-                api_key=cfg.api_key,
-                timeout=cfg.timeout,
-                part_retries=cfg.part_retries,
-                backoff=cfg.backoff,
-                verbose=cfg.verbose,
-                pbar=pbar,
-            )
-    finally:
-        if pbar is not None:
-            pbar.close()
 
-    total_retries += chunk_retries
-
-    file_id = finalize_upload(
-        active_session,
-        cfg.base_url,
-        task_id,
-        api_key=cfg.api_key,
-        timeout=DONE_TIMEOUT,
-    )
-    elapsed = time.time() - start
-    url = PILLOWS_URL_TEMPLATE.format(file_id=file_id)
-
-    if cfg.state:
-        cfg.state.record(
-            abs_path,
+        return _build_result(
+            abs_path=abs_path,
+            url=url,
             size=size,
             sha256=sha256_hash,
+            elapsed=round(elapsed, 2),
             parts_uploaded=uploaded_parts,
-            url=url,
+            total_retries=total_retries,
         )
-
-    return _build_result(
-        abs_path=abs_path,
-        url=url,
-        size=size,
-        sha256=sha256_hash,
-        elapsed=round(elapsed, 2),
-        parts_uploaded=uploaded_parts,
-        total_retries=total_retries,
-    )
+    finally:
+        control_session.close()
 
 
 def upload_one(
@@ -471,7 +498,7 @@ def upload_one(
                 total_retries=total_retries,
                 sha256_hash=sha256_hash,
             )
-        except (niquests.RequestException, RuntimeError) as e:  # noqa: PERF203
+        except _RETRIABLE_EXC as e:  # noqa: PERF203
             attempt += 1
             total_retries += 1
             if attempt >= cfg.retries:
