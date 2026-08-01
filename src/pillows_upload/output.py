@@ -58,10 +58,15 @@ class OutputWriter:
         exc_val: BaseException | None,
         exc_tb: types.TracebackType | None,
     ) -> None:
-        """Close file handles and flush buffered formats."""
-        if self._file:
-            self._file.close()
-        if exc_type is None and self.fmt not in (CSV_EXT, "ndjson"):
+        """Close file handles and flush buffered formats.
+
+        Buffered formats are flushed even when the run was interrupted or
+        crashed, so partial progress is preserved on disk.
+        """
+        if self.fmt in (CSV_EXT, "ndjson"):
+            if self._file is not None:
+                self._file.close()
+        elif self._results:
             self._flush_buffered()
 
     def write(self, result: dict[str, Any]) -> None:

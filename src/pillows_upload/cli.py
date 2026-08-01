@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import logging
 import os
 import sys
@@ -567,6 +568,7 @@ def _run_concurrent_uploads(  # noqa: C901, PLR0913
     show_output: bool,
     agg: tqdm | None,
     breaker: CircuitBreaker | None,
+    writer: OutputWriter | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     """Run uploads concurrently and return (results, error_count)."""
     results: list[dict[str, Any]] = []
@@ -599,6 +601,8 @@ def _run_concurrent_uploads(  # noqa: C901, PLR0913
             else:
                 if result:
                     results.append(result)
+                    if writer is not None:
+                        writer.write(result)
                     if agg is not None:
                         agg.update(result["size"])
                     if breaker is not None:
@@ -620,6 +624,7 @@ def _run_sequential_uploads(  # noqa: PLR0913
     show_output: bool,
     agg: tqdm | None,
     breaker: CircuitBreaker | None,
+    writer: OutputWriter | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     """Run uploads sequentially and return (results, error_count)."""
     results: list[dict[str, Any]] = []
@@ -639,6 +644,8 @@ def _run_sequential_uploads(  # noqa: PLR0913
         )
         if result:
             results.append(result)
+            if writer is not None:
+                writer.write(result)
             if agg is not None:
                 agg.update(result["size"])
             if breaker is not None:
@@ -660,6 +667,7 @@ def _run_adaptive_uploads(  # noqa: C901, PLR0913
     show_output: bool,
     agg: tqdm | None,
     breaker: CircuitBreaker | None,
+    writer: OutputWriter | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     """Upload with concurrency that ramps up on success and down on errors.
 
@@ -716,6 +724,8 @@ def _run_adaptive_uploads(  # noqa: C901, PLR0913
                 else:
                     if result:
                         results.append(result)
+                        if writer is not None:
+                            writer.write(result)
                         if agg is not None:
                             agg.update(result["size"])
                         current = min(max_c, current + 1)
@@ -738,6 +748,7 @@ def _run_upload_loop(  # noqa: PLR0913
     state: StateFile | None,
     progress: bool,
     show_output: bool,
+    writer: OutputWriter | None = None,
 ) -> tuple[list[dict[str, Any]], int, bool]:
     """Run the upload loop. Returns (results, errors, interrupted)."""
     results: list[dict[str, Any]] = []
@@ -767,6 +778,7 @@ def _run_upload_loop(  # noqa: PLR0913
                 show_output=show_output,
                 agg=agg,
                 breaker=breaker,
+                writer=writer,
             )
         elif args.concurrency > MIN_CONCURRENCY:
             results, errors = _run_concurrent_uploads(
@@ -778,6 +790,7 @@ def _run_upload_loop(  # noqa: PLR0913
                 show_output=show_output,
                 agg=agg,
                 breaker=breaker,
+                writer=writer,
             )
         else:
             results, errors = _run_sequential_uploads(
@@ -789,6 +802,7 @@ def _run_upload_loop(  # noqa: PLR0913
                 show_output=show_output,
                 agg=agg,
                 breaker=breaker,
+                writer=writer,
             )
         interrupted = False
     except KeyboardInterrupt:
@@ -873,26 +887,40 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901, PLR0911, PLR0912
     sessions = [make_session() for _ in range(max(args.concurrency, MIN_CONCURRENCY))]
     overall_start = time.time()
 
-    results, errors, interrupted = _run_upload_loop(
-        files,
-        sessions,
-        args,
-        state=state,
-        progress=progress,
-        show_output=show_output,
-    )
+    # Open the output writer up front and write each successful upload as it
+    # finishes, so a crash/interrupt still leaves a complete CSV on disk.
+    writer: OutputWriter | None = None
+    if args.format and args.format != NONE_FORMAT:
+        output_path = args.output or DEFAULT_OUTPUT_PATTERN.format(ext=args.format)
+        writer = OutputWriter(args.format, str(output_path))
+
+    cm: Any = writer if writer is not None else contextlib.nullcontext()
+    with cm as w:
+        results, errors, interrupted = _run_upload_loop(
+            files,
+            sessions,
+            args,
+            state=state,
+            progress=progress,
+            show_output=show_output,
+            writer=w,
+        )
     if interrupted:
         return _handle_keyboard_interrupt(results, state)
 
     for s in sessions:
         s.close()
 
-    _write_output(
-        results,
-        fmt=args.format,
-        output_path=args.output,
-        show_output=show_output,
-    )
+    if writer is None:
+        _write_output(
+            results,
+            fmt=args.format,
+            output_path=args.output,
+            show_output=show_output,
+        )
+    elif show_output:
+        out_path = args.output or DEFAULT_OUTPUT_PATTERN.format(ext=args.format)
+        logger.info("\nOutput: %s", Path(out_path).resolve())
 
     if args.delete:
         _delete_uploaded_files(
