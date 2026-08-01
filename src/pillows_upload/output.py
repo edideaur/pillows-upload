@@ -50,6 +50,9 @@ class OutputWriter:
                     fieldnames=["file_path", self.link_key],
                 )
                 self._writer.writeheader()
+            # Flush immediately so the file is non-empty even before the first
+            # upload completes (header for CSV, nothing buffered for ndjson).
+            self._file.flush()
         return self
 
     def __exit__(
