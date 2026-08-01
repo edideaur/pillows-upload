@@ -269,12 +269,17 @@ def _upload_concurrent(  # noqa: PLR0913
             future_to_part[future] = part_no
             future.add_done_callback(lambda _f: sem.release())
         for future in as_completed(future_to_part):
+            # Drop our reference to the future immediately so its closure
+            # (which holds the uploaded chunk) can be garbage-collected.
+            # Otherwise every completed part's 8 MB chunk stays resident until
+            # the whole file finishes, which OOM-kills large uploads.
+            part_no = future_to_part.pop(future)
             ok, retries = future.result()
             if ok:
                 uploaded += 1
             total_retries += retries
             if not ok:
-                msg = f"part {future_to_part[future]} failed after {part_retries} attempts"
+                msg = f"part {part_no} failed after {part_retries} attempts"
                 raise RuntimeError(msg)
     return uploaded, total_retries
 
