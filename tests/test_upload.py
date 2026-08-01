@@ -25,7 +25,14 @@ from pillows_upload.download import (
 )
 from pillows_upload.output import OutputWriter
 from pillows_upload.state import StateFile, load_state, save_state
-from pillows_upload.upload import UploadConfig, upload_files, upload_one, upload_task
+from pillows_upload.upload import (
+    UploadConfig,
+    UnavailableTraffic,
+    _RETRIABLE_EXC,
+    upload_files,
+    upload_one,
+    upload_task,
+)
 from pillows_upload.utils import _headers, collect_files, compute_sha256
 
 if TYPE_CHECKING:
@@ -1866,3 +1873,18 @@ class TestDownload:
         )
         code = _cmd_download([url, "--dry-run", "-q"])
         assert code == 0
+
+
+def test_unavailable_traffic_is_retriable() -> None:
+    """UnavailableTraffic must resolve and be in the retriable set.
+
+    Regression: the import path moved from urllib3_future to urllib3 across
+    niquests versions. If the import silently fails, UnavailableTraffic stays
+    None and the transient "connection broken in another thread" error escapes
+    every handler and crashes the whole upload run.
+    """
+    assert UnavailableTraffic is not None, (
+        "UnavailableTraffic import failed; transient connection errors will "
+        "not be retried and will abort the run."
+    )
+    assert UnavailableTraffic in _RETRIABLE_EXC

@@ -25,9 +25,15 @@ try:
     # niquests vendors urllib3_future; the traffic police raises this when a
     # pooled connection is torn down in another thread. It is a plain Exception
     # (not a niquests.RequestException), so it otherwise escapes every handler.
-    from urllib3_future.util.traffic_police import UnavailableTraffic
+    # The module moved from urllib3_future to urllib3 across niquests versions,
+    # so try both import paths; if neither resolves, the exception stays a plain
+    # Exception and we fall back to catching its base class at runtime.
+    from urllib3.util.traffic_police import UnavailableTraffic
 except Exception:  # pragma: no cover - vendored path varies across niquests
-    UnavailableTraffic = None  # type: ignore[assignment]
+    try:
+        from urllib3_future.util.traffic_police import UnavailableTraffic
+    except Exception:  # pragma: no cover - vendored path varies across niquests
+        UnavailableTraffic = None  # type: ignore[assignment]
 
 from .api import finalize_upload, init_upload, upload_part
 
