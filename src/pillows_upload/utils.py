@@ -28,6 +28,7 @@ _QUIC_CACHE: MutableMapping[Any, Any] = {}
 def make_session(
     *,
     force_http3: bool = False,
+    disable_http3: bool = False,
     quic_cache: MutableMapping[Any, Any] | None = None,
 ) -> niquests.Session:
     """Create a pooled HTTP session optimized for throughput.
@@ -43,11 +44,14 @@ def make_session(
     """
     if not force_http3 and os.environ.get("PILLOWS_FORCE_HTTP3") == "1":
         force_http3 = True
+    if not disable_http3 and os.environ.get("PILLOWS_DISABLE_HTTP3") == "1":
+        disable_http3 = True
     cache = quic_cache if quic_cache is not None else _QUIC_CACHE
     session = niquests.Session(
         multiplexed=True,
         disable_http1=force_http3,
         disable_http2=force_http3,
+        disable_http3=disable_http3,
         quic_cache_layer=cache,
     )
     seen_protocols: set[str] = set()
@@ -101,9 +105,14 @@ def _should_skip_file(
     min_sz: int,
     max_sz: int,
     verbose: bool,
+    state_name: str | None = None,
 ) -> bool:
     """Check if a file should be skipped based on filters."""
     if not path.is_file():
+        return True
+    if state_name and path.name == state_name:
+        if verbose:
+            logger.info("Skipping %s: resume state file", path)
         return True
     if ext_set and path.suffix.lower() not in ext_set:
         return True
@@ -126,11 +135,13 @@ def collect_files(
     min_size: int | None,
     max_size: int | None,
     verbose: bool,
+    state_file: str | None = None,
 ) -> list[Path]:
     """Collect files matching the given filters from the provided paths."""
     ext_set = {e if e.startswith(".") else f".{e}" for e in extensions} if extensions else None
     min_sz = _resolve_default(min_size, 0)
     max_sz = _resolve_default(max_size, 0)
+    state_name = Path(state_file).name if state_file else None
     files: list[Path] = []
     for raw_path in paths:
         path = Path(raw_path)
@@ -150,6 +161,7 @@ def collect_files(
                 ext_set=ext_set,
                 min_sz=min_sz,
                 max_sz=max_sz,
+                state_name=state_name,
                 verbose=verbose,
             )
         )

@@ -528,6 +528,7 @@ def _collect_and_filter_files(
         min_size=args.min_size,
         max_size=args.max_size,
         verbose=not args.quiet,
+        state_file=getattr(args, "state_file", None),
     )
     if not files:
         return []
